@@ -319,10 +319,18 @@ def get_prediction_reason(
 
         explainer = shap.TreeExplainer(clf)
         shap_vals = explainer.shap_values(X_trans)
+        # Robust extraction
         if isinstance(shap_vals, list):
-            sv = np.array(shap_vals[1])[0]
+            vals = shap_vals[1]
         else:
-            sv = np.array(shap_vals)[0]
+            vals = shap_vals
+        vals = np.array(vals)
+        if vals.ndim == 2:
+            sv = vals[0]
+        elif vals.ndim == 1:
+            sv = vals
+        else:
+            sv = vals.flatten()
 
         # Feature names after preprocessing
         try:
@@ -348,10 +356,18 @@ def get_prediction_reason(
 
         explainer = shap.TreeExplainer(clf)
         shap_vals = explainer.shap_values(X_arr)
+        # Robust extraction
         if isinstance(shap_vals, list):
-            sv = np.array(shap_vals[1])[0]
+            vals = shap_vals[1]
         else:
-            sv = np.array(shap_vals)[0]
+            vals = shap_vals
+        vals = np.array(vals)
+        if vals.ndim == 2:
+            sv = vals[0]
+        elif vals.ndim == 1:
+            sv = vals
+        else:
+            sv = vals.flatten()
 
         feature_names = expected
 

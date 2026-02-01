@@ -12,12 +12,14 @@ from typing import Optional
 
 import joblib
 import pandas as pd
+import numpy as np
 import shap
 import streamlit as st
 
 from data_gen import generate_synthetic_data
 from explainer import explain_dataset, load_pipeline
 from ocr_engine import extract_ehr_data
+from doctor_finder import find_nearby_doctors
 
 MODEL_PATH = "models/rf_pipeline.joblib"
 
@@ -76,6 +78,45 @@ def load_model(path: str = MODEL_PATH):
 
 def style_badge(label: str, color: str) -> str:
     return f"<span style='background:{color};color:white;padding:6px 10px;border-radius:6px;font-weight:600'>{label}</span>"
+
+
+def render_doctor_finder(patient_df: pd.DataFrame, api_key: str, key_suffix: str = "main"):
+    """Render the recommended doctors section with unique state keys."""
+    if st.button("Find Nearest Doctor", key=f"find_doctor_btn_{key_suffix}"):
+        st.session_state[f"find_doctor_{key_suffix}"] = True
+
+    if st.session_state.get(f"find_doctor_{key_suffix}", False):
+         # Extract specialty
+        specialty = "General Physician"
+        if "appointment_type" in patient_df.columns:
+             specialty = patient_df["appointment_type"].iloc[0]
+        
+        if specialty == "PrimaryCare":
+            specialty = "General Physician"
+            
+        st.subheader("👨‍⚕️ Recommended Doctors")
+        st.markdown(f"**Department:** {specialty}")
+        st.caption(f"Powered by Geoapify")
+        
+        # Mock location (Pune) for demo
+        lat, lon = 18.5204, 73.8567 
+        
+        with st.spinner(f"Searching for {specialty} near you..."):
+            doctors = find_nearby_doctors(lat, lon, specialty=specialty, api_key=api_key)
+            
+        if doctors:
+            for i, doc in enumerate(doctors):
+                # Mock availability (randomize slightly for demo)
+                avail = "Available Today: 4:00 PM" if i % 2 == 0 else "Next Slot: Tomorrow 10:00 AM"
+                st.markdown(f"""
+                <div style='padding:10px; border:1px solid #ddd; border-radius:10px; margin-bottom:10px'>
+                    <b>{doc['name']}</b> <span style='float:right; color:green; font-size:0.8em'>{avail}</span><br>
+                    <span style='color:grey'>{doc['specialty']}</span> • {doc['distance']}<br>
+                    <small>{doc['address']}</small>
+                </div>
+                """, unsafe_allow_html=True)
+        else:
+            st.info("No doctors found nearby.")
 
 
 def main():
@@ -145,7 +186,7 @@ def main():
             try:
                 prob = float(load_model().predict_proba(patient_df)[:, 1][0])
                 label, color = risk_label(prob)
-                st.markdown(f"**Predicted no-show probability:** {prob:.2f}  ")
+                st.markdown(f"**Predicted no-show probability:** {prob*100:.1f}%")
                 st.markdown(style_badge(label, color), unsafe_allow_html=True)
 
                 expl = explain_dataset(load_model(), patient_df, top_k=3)
@@ -160,6 +201,14 @@ def main():
                 weather_flag = any("weather" in str(f).lower() or "storm" in str(f).lower() for f, _ in reasons)
                 if label == "High" and weather_flag and distance_val is not None and distance_val > 10:
                     st.warning("Note: Patient likely to miss due to severe weather conditions + travel distance. Suggesting Telehealth conversion.")
+                
+                # Doctor Finder in Sidebar
+                # We need api_key_input. Let's assume it's defined in main or we use the default.
+                # Ideally, we move API key input to sidebar top.
+                # For this patch, I will use the default key directly or check session state if I move logic.
+                # I will define api_key locally here to be safe, defaulting to the provided one.
+                default_key = "dc0cf78c14ec43ed8203f975bedefec0"
+                render_doctor_finder(patient_df, api_key=default_key, key_suffix="sidebar")
 
             except Exception as e:
                 st.error(f"Prediction failed: {e}")
@@ -211,7 +260,68 @@ def main():
     c3.markdown(style_badge("High", "red"), unsafe_allow_html=True)
     c3.caption(f"{counts.get('High',0)} patients")
 
-    st.dataframe(df.head(200))
+    st.subheader("Admin Console")
+    
+    # Toggle for Admin View
+    admin_mode = st.checkbox("Enable Admin View (High Risk / Telehealth)", value=False)
+
+    if admin_mode:
+        st.info("Admin Mode: Filter needy patients and switch to Online appointments.")
+        
+        # Filters
+        filter_col1, filter_col2 = st.columns(2)
+        with filter_col1:
+            risk_filter = st.multiselect("Filter by Risk", ["High", "Medium", "Low"], default=["High"])
+        with filter_col2:
+            mode_filter = st.multiselect("Filter by Mode", ["Online", "Offline"], default=["Offline"])
+            
+        # Filter Logic
+        filtered_df = df.copy()
+        if risk_filter:
+            filtered_df = filtered_df[filtered_df["risk"].isin(risk_filter)]
+        # Determine mode column name
+        col_mode = "appointment_mode"
+        if col_mode not in filtered_df.columns:
+             if "Appointment_Mode" in filtered_df.columns:
+                 col_mode = "Appointment_Mode"
+             else:
+                 filtered_df[col_mode] = "Offline"
+
+        if mode_filter:
+            filtered_df = filtered_df[filtered_df[col_mode].isin(mode_filter)]
+
+        st.write(f"Showing {len(filtered_df)} patients")
+
+        # Display Custom Table for Admins
+        for i, row in filtered_df.iterrows():
+            with st.container():
+                c1, c2, c3, c4, c5 = st.columns([1, 2, 2, 2, 2])
+                c1.write(f"**#{i}**")
+                c2.write(f"Risk: {style_badge(row['risk'], row['risk_color'])} ({row['no_show_prob']*100:.1f}%)", unsafe_allow_html=True)
+                c3.write(f"Dept: {row['appointment_type']}")
+                
+                # Mode Toggle (Mock)
+                current_mode = row.get(col_mode, "Offline")
+                new_mode = c4.selectbox(f"Mode #{i}", ["Offline", "Online"], index=0 if current_mode=="Offline" else 1, key=f"mode_{i}")
+                
+                # Action
+                if new_mode == "Online":
+                    # Generate Google Meet Link (Mock)
+                    meet_link = f"https://meet.google.com/new?authuser=0&patient={i}"
+                    c5.markdown(f"[Start Google Meet]({meet_link})", unsafe_allow_html=True)
+                else:
+                    if st.button(f"Send Reminder #{i}", key=f"remind_{i}"):
+                        st.toast(f"✅ Reminder sent to Patient #{i}!", icon="📩")
+                        # Mock backend call result
+                        c5.success("Sent!")
+                    else:
+                        c5.caption("Patient visiting clinic")
+                
+                st.markdown("---")
+                
+    else:
+        # Standard Table
+        st.dataframe(df.head(200))
 
     st.subheader("Inspect individual patient")
     idx = st.number_input("Row index", min_value=0, max_value=len(df) - 1, value=0)
@@ -236,7 +346,7 @@ def main():
     prob = float(model.predict_proba(patient_mod)[:, 1][0])
     label, color = risk_label(prob)
 
-    st.markdown(f"**Predicted no-show probability:** {prob:.2f}  ")
+    st.markdown(f"**Predicted no-show probability:** {prob*100:.1f}%")
     st.markdown(style_badge(label, color), unsafe_allow_html=True)
 
     # Explain
@@ -252,6 +362,9 @@ def main():
         for feat, val in reasons:
             sign = "+" if val > 0 else "-"
             st.write(f"{feat}: {sign}{abs(val):.3f}")
+            # Specific reasoning callout for Weather
+            if "weather" in str(feat).lower() or "storm" in str(feat).lower() or "rain" in str(feat).lower():
+                st.info(f"**Weather Impact**: {feat} is increasing the risk by {abs(val):.3f}. Consider rescheduling if travel is difficult.")
 
         # Weather-driven alert: if high risk and weather is a contributor and distance>10km
         distance_val = None
@@ -269,16 +382,62 @@ def main():
             preproc = model.named_steps["preprocess"]
             X_trans = preproc.transform(patient_mod)
             explainer = shap.TreeExplainer(model.named_steps["clf"])
-            shap_values = explainer.shap_values(X_trans)
-            # waterfall plot for class 1
-            if isinstance(shap_values, list):
-                sv = shap_values[1][0]
+            
+            # Calculate SHAP values
+            shap_output = explainer.shap_values(X_trans)
+            
+            # --- Robust SHAP Value Extraction ---
+            sv = None
+            if isinstance(shap_output, list):
+                # Binary classification usually returns [class_0, class_1]
+                if len(shap_output) > 1:
+                     sv = shap_output[1]
+                else:
+                     sv = shap_output[0]
+            elif isinstance(shap_output, np.ndarray):
+                # Could be (samples, features) or (samples, features, classes)
+                if shap_output.ndim == 3:
+                    sv = shap_output[:, :, 1]
+                else:
+                    sv = shap_output
             else:
-                sv = shap_values[0]
+                 sv = shap_output
 
-            st.pyplot(shap.plots._waterfall.waterfall_legacy(explainer.expected_value[1], sv, feature_names=explainer.feature_names if hasattr(explainer, 'feature_names') else None, show=False))
+            # Flatten to (features,) for single sample
+            if isinstance(sv, np.ndarray) and sv.ndim == 2:
+                sv = sv[0]
+            # ------------------------------------
+
+            # --- Robust Base Value Extraction ---
+            base_val = explainer.expected_value
+            if isinstance(base_val, (list, np.ndarray)):
+                 if len(base_val) > 1:
+                     base_val = base_val[1]
+                 else:
+                     base_val = base_val[0]
+            # ------------------------------------
+            
+            # Plot
+            st.pyplot(shap.plots._waterfall.waterfall_legacy(
+                base_val, 
+                sv, 
+                feature_names=explainer.feature_names if hasattr(explainer, 'feature_names') else None, 
+                show=False
+            ))
+            
         except Exception as e:
-            st.warning(f"SHAP plotting failed: {e}")
+            st.error(f"SHAP Error Details: {e}")
+            # Optional: st.write(f"Debug: expected_value shape={np.shape(explainer.expected_value)}")
+
+    st.markdown("---")
+    st.markdown("---")
+    
+    # Api Key Input
+    api_key_input = "dc0cf78c14ec43ed8203f975bedefec0"
+    if st.checkbox("Override API Key"):
+        api_key_input = st.text_input("Enter Geoapify Key", type="password", value=api_key_input)
+        
+    render_doctor_finder(patient_mod, api_key=api_key_input, key_suffix="main")
 
     st.markdown("---")
     st.caption("JijaArogyaCare · A professional no-show risk assistant for hospitals")

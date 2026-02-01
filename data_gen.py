@@ -84,6 +84,8 @@ def generate_synthetic_data(n_samples: int = 5000, seed: int = 42) -> pd.DataFra
             "appointment_type": appointment_type,
             "weather": weather,
             "no_show": no_show,
+            # Admin features
+            "appointment_mode": np.random.choice(["Offline", "Online"], n_samples, p=[0.8, 0.2]),
         }
     )
 

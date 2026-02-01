@@ -55,25 +55,60 @@ def explain_dataset(pipeline, X: pd.DataFrame, top_k: int = 3) -> pd.DataFrame:
 
     # SHAP TreeExplainer on RandomForest
     explainer = shap.TreeExplainer(clf)
-    shap_values = explainer.shap_values(X_trans)
-
-    # For binary classification shap_values is a list [neg, pos]
-    # We focus on class 1 (index 1) contributions
-    if isinstance(shap_values, list):
-        shap_vals_pos = np.array(shap_values[1])
-    else:
-        shap_vals_pos = np.array(shap_values)
-
     feature_names = _get_feature_names(pipeline)
 
-    results = []
+    # SHAP TreeExplainer on RandomForest
+    explainer = shap.TreeExplainer(clf)
+    shap_vals_raw = explainer.shap_values(X_trans)
 
+    # shap_vals_raw structure depends on sklearn/shap version
+    # Binary classification: usually list of 2 arrays [arr_class0, arr_class1]
+    # or single array if older shap
+    if isinstance(shap_vals_raw, list):
+        # We want Class 1 (Positive)
+        vals = shap_vals_raw[1]
+    else:
+        # If single array, check if it's already class 1 or need logic
+        # For RF classifier, it's safer to assume list, but if not:
+        if len(shap_vals_raw.shape) == 3: # (samples, features, classes)
+             vals = shap_vals_raw[:, :, 1]
+        else:
+             vals = shap_vals_raw
+    
+    # Ensure numpy
+    vals = np.array(vals)
+    
+    # If vals is 2D (samples, features), correct.
+    # If 1D (features,) - implies single sample but shape lost
+    if vals.ndim == 1:
+        vals = vals.reshape(1, -1)
+    
+    # Double check compatibility
+    if vals.shape[1] != len(feature_names):
+         # Mismatch can happen if X_trans has different cols than feature_names expectation
+         # But usually they match if pipeline is consistent
+         pass
+
+    results = []
     probs = pipeline.predict_proba(X)[:, 1]
 
-    for i, row in enumerate(shap_vals_pos):
+    for i in range(len(X)):
+        row = vals[i]
         # positive contributions sorted descending
+        # Ensure row is 1D array of floats
+        row = row.flatten()
+        
+        # Argsort gives indices
         pos_idx = np.argsort(-row)[:top_k]
-        top = [(feature_names[j], float(row[j])) for j in pos_idx]
+        
+        # Safe extraction
+        top = []
+        for j in pos_idx:
+            # j must be int
+            j_int = int(j)
+            fname = feature_names[j_int] if j_int < len(feature_names) else f"Feature {j_int}"
+            top.append((fname, float(row[j_int])))
+        
         results.append({"index": i, "prob": float(probs[i]), "top_reasons": top})
 
     return pd.DataFrame(results)
